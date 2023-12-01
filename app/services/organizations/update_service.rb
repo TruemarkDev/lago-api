@@ -10,6 +10,13 @@ module Organizations
     end
 
     def call
+      if params.key?(:document_number_prefix) && !params[:document_number_prefix].to_s.length.between?(1, 10)
+        return result.single_validation_failure!(
+          field: :document_number_prefix,
+          error_code: 'invalid_length',
+        )
+      end
+
       organization.email = params[:email] if params.key?(:email)
       organization.legal_name = params[:legal_name] if params.key?(:legal_name)
       organization.legal_number = params[:legal_number] if params.key?(:legal_number)
@@ -24,6 +31,8 @@ module Organizations
       organization.country = params[:country]&.upcase if params.key?(:country)
       organization.default_currency = params[:default_currency]&.upcase if params.key?(:default_currency)
       organization.net_payment_term = params[:net_payment_term] if params.key?(:net_payment_term)
+      organization.document_numbering = params[:document_numbering] if params.key?(:document_numbering)
+      organization.document_number_prefix = params[:document_number_prefix] if params.key?(:document_number_prefix)
 
       billing = params[:billing_configuration]&.to_h || {}
       organization.invoice_footer = billing[:invoice_footer] if billing.key?(:invoice_footer)
