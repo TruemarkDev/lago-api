@@ -26,6 +26,8 @@ module Types
 
       field :applied_taxes, [Types::Fees::AppliedTaxes::Object]
 
+      field :adjusted_fee, Boolean, null: false
+
       delegate :group_name, to: :object
       delegate :invoice_name, to: :object
 
@@ -35,6 +37,10 @@ module Types
 
       def applied_taxes
         object.applied_taxes.order(tax_rate: :desc)
+      end
+
+      def adjusted_fee
+        object.adjusted_fee.present?
       end
     end
   end
