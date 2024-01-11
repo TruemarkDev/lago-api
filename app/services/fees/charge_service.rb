@@ -18,7 +18,16 @@ module Fees
       init_true_up_fee(fee: result.fees.first, amount_cents: result.fees.sum(&:amount_cents))
       return result unless result.success?
 
-      result.fees.each(&:save!)
+      ActiveRecord::Base.transaction do
+        result.fees.each do |fee|
+          fee.save!
+
+          if invoice.draft? && fee.true_up_parent_fee.nil? && adjusted_fee(fee.group)
+            adjusted_fee(fee.group).update!(fee:)
+          end
+        end
+      end
+
       result
     rescue ActiveRecord::RecordInvalid => e
       result.record_validation_failure!(record: e.record)
@@ -59,6 +68,17 @@ module Fees
     end
 
     def init_fee(properties:, group: nil)
+      if invoice.draft? && adjusted_fee(group)
+        amount_result = compute_amount_for_adjusted_fee(properties:, group:)
+        return result.fail_with_error!(amount_result.error) unless amount_result.success?
+
+        new_fee = init_adjusted_fee(amount_result, group)
+
+        result.fees << new_fee
+
+        return
+      end
+
       amount_result = compute_amount(properties:, group:)
       return result.fail_with_error!(amount_result.error) unless amount_result.success?
 
@@ -99,6 +119,75 @@ module Fees
       )
 
       result.fees << new_fee
+    end
+
+    def init_adjusted_fee(amount_result, group)
+      currency = invoice.total_amount.currency
+      adjusted_fee = adjusted_fee(group)
+
+      units = adjusted_fee.units
+      if adjusted_fee.adjusted_units?
+        rounded_amount = amount_result.amount.round(currency.exponent)
+        amount_cents = rounded_amount * currency.subunit_to_unit
+        unit_amount_cents = amount_result.unit_amount * currency.subunit_to_unit
+        precise_unit_amount = amount_result.unit_amount
+        amount_details = amount_result.amount_details
+      else
+        unit_amount_cents = adjusted_fee.unit_amount_cents.round
+        amount_cents = (units * unit_amount_cents).round
+        precise_unit_amount = amount_cents / (currency.subunit_to_unit * units)
+        amount_details = {}
+      end
+
+      Fee.new(
+        invoice:,
+        subscription:,
+        charge:,
+        amount_cents:,
+        amount_currency: currency,
+        fee_type: :charge,
+        invoiceable_type: 'Charge',
+        invoiceable: charge,
+        units:,
+        total_aggregated_units: units,
+        properties: boundaries.to_h,
+        events_count: 0,
+        group_id: group&.id,
+        payment_status: :pending,
+        taxes_amount_cents: 0,
+        unit_amount_cents:,
+        precise_unit_amount:,
+        amount_details:,
+        invoice_display_name: adjusted_fee.invoice_display_name,
+      )
+    end
+
+    def adjusted_fee(group)
+      @adjusted_fee ||= {}
+
+      key = group ? group.id : 'default'
+
+      return @adjusted_fee[key] if @adjusted_fee.key?(key)
+
+      @adjusted_fee[key] = AdjustedFee
+        .where(invoice:, subscription:, charge:, group:, fee_type: :charge)
+        .where("(properties->>'charges_from_datetime')::date = ?", boundaries.charges_from_datetime.to_date)
+        .where("(properties->>'charges_to_datetime')::date = ?", boundaries.charges_to_datetime.to_date)
+        .first
+    end
+
+    def compute_amount_for_adjusted_fee(properties:, group:)
+      adjusted_fee = adjusted_fee(group)
+
+      return BaseService::Result.new if adjusted_fee.adjusted_amount?
+
+      adjusted_fee_result = BaseService::Result.new
+      adjusted_fee_result.aggregation = adjusted_fee.units
+      adjusted_fee_result.current_usage_units = adjusted_fee.units
+      adjusted_fee_result.full_units_number = adjusted_fee.units
+      adjusted_fee_result.count = 0
+
+      apply_charge_model_service(adjusted_fee_result, properties)
     end
 
     def init_true_up_fee(fee:, amount_cents:)
